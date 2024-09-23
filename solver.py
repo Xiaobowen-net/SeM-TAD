@@ -164,13 +164,11 @@ class Solver(object):
         train_steps = len(self.train_loader)
         early_stopping = TwoEarlyStopping(patience=5, verbose=True, dataset_name=self.dataset)
         # early_stopping = OneEarlyStopping(patience=5, verbose=True, dataset_name=self.dataset)
-        f1 = 0
         from tqdm import tqdm
         for epoch in tqdm(range(self.num_epochs)):
             iter_count = 0
             loss_list = []
-            rec_loss_list = [];contrast_loss_list=[]
-            gather_loss_list = []
+            rec_loss_list = []
             kl_loss_list = []
 
             epoch_time = time.time()
@@ -182,9 +180,7 @@ class Solver(object):
                 output_dict = self.model(input,mode='train')
                 output, m_items, queries = output_dict['out'], output_dict['m_items'], output_dict['queries']
                 kld_loss = output_dict['kld_loss']
-
                 rec_loss = self.criterion(output, input)
-
                 loss = rec_loss + self.lamda_1 * kld_loss
 
                 loss_list.append(loss.item())
@@ -201,7 +197,6 @@ class Solver(object):
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(loss_list)
             train_kl_loss = np.average(kl_loss_list)
-
             train_rec_loss = np.average(rec_loss_list)
             valid_loss,valid_rec,valid_contrast,valid_gather,valid_kl = self.vali(self.test_loader)
             print(
@@ -213,8 +208,8 @@ class Solver(object):
             print(
                 "Epoch: {0}, Steps: {1} | VALID reconstruction Loss: {2:.7f} KL loss Loss: {3:.7f}".format(
                     epoch + 1, train_steps, valid_rec,valid_kl))
-            acc,prec,recall,F1,_ = self.test()
-            print("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f} ".format(acc, prec, recall, F1))
+            # acc,prec,recall,F1,_ = self.test()
+            # print("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f} ".format(acc, prec, recall, F1))
             ####################
             early_stopping(valid_loss, self.model, path,self.read_K)
             # early_stopping(F1, self.model, path)
@@ -243,7 +238,9 @@ class Solver(object):
             test_rec_energy = []
             test_latent_energy = []
             test_kl_energy = []
+            distance_with_q = []
 
+            epoch_time = time.time()
             for i, (input_data, labels) in enumerate(self.thre_loader):
                 input = input_data.float().to(self.device)
                 output_dict= self.model(input)
@@ -259,6 +256,8 @@ class Solver(object):
                 latent_score = latent_score.detach().cpu().numpy()
                 kl_score = kl_score.detach().cpu().numpy()
 
+                distance_with_q.append(gathering_loss(queries, mem_items).detach().cpu().numpy())
+
                 test_rec_energy.append(rec_loss)
                 test_latent_energy.append(latent_score)
                 test_kl_energy.append(kl_score)
@@ -267,22 +266,18 @@ class Solver(object):
                 input = input.detach().cpu().numpy()
                 true_zhi = input[:, :, 0:1]
                 true_list.append(true_zhi)
-
+            print("cost time: {}".format(time.time() - epoch_time))
             test_rec_energy = np.concatenate(test_rec_energy, axis=0).reshape(-1, 1)
             # test_rec_energy = StandardScaler().fit_transform(test_rec_energy)
             # test_rec_energy = MinMaxScaler().fit_transform(test_rec_energy)
-
-
             test_latent_energy = np.concatenate(test_latent_energy, axis=0).reshape(-1, 1)
             # test_latent_energy = StandardScaler().fit_transform(test_latent_energy)
-
             test_kl_energy = np.concatenate(test_kl_energy, axis=0).reshape(-1, 1)
-
             test_labels = np.concatenate(test_labels, axis=0).reshape(-1)
             test_labels = np.array(test_labels)  # 51200
             true_list = np.concatenate(true_list, axis=0).reshape(-1, 1)  # 50688 * 1
             true_list = np.array(true_list).reshape(-1)
-
+            distance_with_q = np.concatenate(distance_with_q, axis=0).reshape(-1)
             x = self.beta_1 *  test_latent_energy + (1 - self.beta_1) * test_kl_energy + self.beta_2 * test_rec_energy
             test_energy = np.array(x).reshape(-1)
             Accuracy = 0
@@ -294,9 +289,6 @@ class Solver(object):
             thres = np.percentile(test_energy, thre)
             for i in thres:
                 thresh = i
-                pred_4 = (test_energy > thresh).astype(int)
-                gt_4 = test_labels.astype(int)
-
                 pred = (test_energy > thresh).astype(int)
                 gt = test_labels.astype(int)
                 anomaly_state = False
@@ -332,13 +324,17 @@ class Solver(object):
                     thr = thresh
                     Gt = gt
                     Pred = pred
-                    Gt_4 = gt_4
-                    Pred_4 = pred_4
 
             if test == 1:
                 # pairwise_distances = torch.cdist(mem_items, mem_items, p=2)
                 # mermory_heat_map(pairwise_distances[1].detach().cpu().numpy(),2)
                 # visualization(thr,Pred,test_energy,test_labels,true_list)
+                f = open("dp.txt", 'a')
+                f.write("数据集  " + str(self.dataset) + "  \n")
+                f.write('\n')
+                f.close()
+                xiangxiantu(distance_with_q, test_labels)
+
                 print("Threshold :", thr)
                 print(
                     "Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f} ".format(
@@ -357,11 +353,11 @@ class Solver(object):
                 f.close()
 
                 ############################# 其他评价指标
-                matrix = [self.index]
-                scores_simple = combine_all_evaluation_scores(Pred, Gt, test_energy)
-                for key, value in scores_simple.items():
-                    matrix.append(value)
-                    print('{0:21} : {1:0.4f}'.format(key, value))
+                # matrix = [self.index]
+                # scores_simple = combine_all_evaluation_scores(Pred, Gt, test_energy)
+                # for key, value in scores_simple.items():
+                #     matrix.append(value)
+                #     print('{0:21} : {1:0.4f}'.format(key, value))
                 # import csv
                 # with open('result/' + self.dataset + '.csv', 'a+') as f:
                 #     writer = csv.writer(f)
